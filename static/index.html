@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>高压气体钢瓶液位监测系统</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+            background: #0f1923;
+            color: #e0e6ed;
+            min-height: 100vh;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #1a2a3a 0%, #0f1923 100%);
+            border-bottom: 1px solid #2a3a4a;
+            padding: 20px 32px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .header h1 {
+            font-size: 20px;
+            font-weight: 600;
+            letter-spacing: 1px;
+            color: #8cb4d5;
+        }
+
+        .header .status {
+            font-size: 13px;
+            color: #5a7a8a;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .header .status .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #3a5a3a;
+            animation: pulse 2s infinite;
+        }
+
+        .header .status .dot.online {
+            background: #4caf50;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        .container {
+            max-width: 1100px;
+            margin: 24px auto;
+            padding: 0 24px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #162230;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        thead th {
+            background: #1a2d3d;
+            padding: 14px 16px;
+            text-align: left;
+            font-size: 13px;
+            font-weight: 600;
+            color: #7a9ab5;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid #2a3a4a;
+        }
+
+        tbody td {
+            padding: 14px 16px;
+            font-size: 14px;
+            border-bottom: 1px solid #1e2e3e;
+            transition: background 0.2s;
+        }
+
+        tbody tr:hover {
+            background: #1a2d3d;
+        }
+
+        tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        .percentage {
+            font-weight: 700;
+            font-size: 16px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .percentage.high { color: #4caf50; }
+        .percentage.medium { color: #ff9800; }
+        .percentage.low { color: #f44336; }
+        .percentage.none { color: #5a6a7a; }
+
+        .bar-container {
+            width: 120px;
+            height: 6px;
+            background: #1a2d3d;
+            border-radius: 3px;
+            overflow: hidden;
+            margin-top: 4px;
+        }
+
+        .bar-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.5s ease;
+        }
+
+        .bar-fill.high { background: linear-gradient(90deg, #388e3c, #4caf50); }
+        .bar-fill.medium { background: linear-gradient(90deg, #f57c00, #ff9800); }
+        .bar-fill.low { background: linear-gradient(90deg, #d32f2f, #f44336); }
+        .bar-fill.none { background: #3a4a5a; }
+
+        .no-data {
+            color: #4a5a6a;
+            font-style: italic;
+        }
+
+        .refresh-info {
+            text-align: right;
+            font-size: 12px;
+            color: #4a6a7a;
+            margin-top: 12px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #4a6a7a;
+        }
+
+        .empty-state .icon {
+            font-size: 40px;
+            margin-bottom: 12px;
+        }
+
+        @media (max-width: 768px) {
+            .container { padding: 0 12px; }
+            thead th, tbody td { padding: 10px 8px; font-size: 12px; }
+            .bar-container { width: 80px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>高压气体钢瓶液位监测</h1>
+        <div class="status">
+            <span class="dot" id="statusDot"></span>
+            <span id="statusText">连接中...</span>
+        </div>
+    </div>
+
+    <div class="container">
+        <table>
+            <thead>
+                <tr>
+                    <th>钢瓶编号</th>
+                    <th>材质</th>
+                    <th>壁厚 (mm)</th>
+                    <th>内高 (m)</th>
+                    <th>液位百分比</th>
+                    <th>温度 (°C)</th>
+                    <th>更新时间</th>
+                </tr>
+            </thead>
+            <tbody id="cylinderTable">
+                <tr>
+                    <td colspan="7" class="empty-state">
+                        <div class="icon">⏳</div>
+                        <div>正在加载数据...</div>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="refresh-info" id="refreshInfo"></div>
+    </div>
+
+    <script>
+        const REFRESH_INTERVAL = 3000;
+
+        function getLevelClass(percentage) {
+            if (percentage === null || percentage === undefined) return 'none';
+            if (percentage >= 50) return 'high';
+            if (percentage >= 20) return 'medium';
+            return 'low';
+        }
+
+        function formatTime(dateStr) {
+            if (!dateStr) return '-';
+            const d = new Date(dateStr);
+            const pad = (n) => String(n).padStart(2, '0');
+            return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+        }
+
+        function formatFullTime(dateStr) {
+            if (!dateStr) return '-';
+            const d = new Date(dateStr);
+            const pad = (n) => String(n).padStart(2, '0');
+            return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+        }
+
+        function renderTable(cylinders) {
+            const tbody = document.getElementById('cylinderTable');
+
+            if (!cylinders || cylinders.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="7" class="empty-state">
+                            <div class="icon">📭</div>
+                            <div>暂无钢瓶数据</div>
+                        </td>
+                    </tr>`;
+                return;
+            }
+
+            tbody.innerHTML = cylinders.map(c => {
+                const pct = c.last_percentage;
+                const cls = getLevelClass(pct);
+                const pctDisplay = pct !== null && pct !== undefined ? pct.toFixed(1) + '%' : '-';
+                const tempDisplay = c.last_temperature !== null && c.last_temperature !== undefined
+                    ? c.last_temperature.toFixed(1) : '-';
+                const timeDisplay = c.last_recorded_at ? formatTime(c.last_recorded_at) : '-';
+
+                return `
+                    <tr>
+                        <td style="font-weight:600; color:#8cb4d5;">${c.cylinder_code}</td>
+                        <td>${c.material}</td>
+                        <td>${(c.wall_thickness * 1000).toFixed(1)}</td>
+                        <td>${c.total_height.toFixed(2)}</td>
+                        <td>
+                            <span class="percentage ${cls}">${pctDisplay}</span>
+                            <div class="bar-container">
+                                <div class="bar-fill ${cls}" style="width: ${pct !== null && pct !== undefined ? Math.min(pct, 100) : 0}%"></div>
+                            </div>
+                        </td>
+                        <td>${tempDisplay}</td>
+                        <td style="color:#5a7a8a; font-size:13px;">${timeDisplay}</td>
+                    </tr>`;
+            }).join('');
+        }
+
+        async function fetchData() {
+            try {
+                const res = await fetch('/api/cylinders');
+                if (!res.ok) throw new Error('请求失败');
+                const data = await res.json();
+                renderTable(data);
+
+                const dot = document.getElementById('statusDot');
+                const text = document.getElementById('statusText');
+                dot.classList.add('online');
+                text.textContent = '在线 · ' + new Date().toLocaleTimeString('zh-CN');
+
+                const info = document.getElementById('refreshInfo');
+                info.textContent = `最近刷新: ${formatFullTime(new Date().toISOString())} · 每 ${REFRESH_INTERVAL / 1000} 秒自动刷新`;
+            } catch (e) {
+                const dot = document.getElementById('statusDot');
+                const text = document.getElementById('statusText');
+                dot.classList.remove('online');
+                text.textContent = '离线 · ' + new Date().toLocaleTimeString('zh-CN');
+            }
+        }
+
+        fetchData();
+        setInterval(fetchData, REFRESH_INTERVAL);
+    </script>
+</body>
+</html>
