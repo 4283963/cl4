@@ -1,6 +1,15 @@
 import numpy as np
 from dataclasses import dataclass
 from typing import Tuple
+import os, urllib.request, json, uuid
+RUN_ID = os.environ.get("DEBUG_RUN_ID", "pre-fix-" + uuid.uuid4().hex[:8])
+def _dbg(hypo, data):
+    try:
+        data["hypothesisId"] = hypo
+        data["runId"] = RUN_ID
+        req = urllib.request.Request(os.environ["DEBUG_SERVER_URL"], data=json.dumps(data).encode(), headers={"Content-Type": "application/json", "X-Session-Id": os.environ["DEBUG_SESSION_ID"]}, method="POST")
+        urllib.request.urlopen(req, timeout=0.5).read()
+    except Exception: pass
 
 
 MATERIAL_SOUND_VELOCITY = {
@@ -85,6 +94,8 @@ def calculate_wall_sound_velocity(material: str, temperature: float) -> float:
 
     原理: v(T) = v0 + α * (T - T0)
     其中 v0 为 20°C 时的声速, α 为温度系数, T0 = 20°C
+
+    注意: 一阶线性近似仅在合理温度范围内有效, 超出范围会限制到物理合理值
     """
     if material not in MATERIAL_SOUND_VELOCITY:
         material = "steel"
@@ -94,7 +105,21 @@ def calculate_wall_sound_velocity(material: str, temperature: float) -> float:
     v0 = props["v0"]
     alpha = props["temp_coeff"]
 
-    return v0 + alpha * (temperature - reference_temp)
+    #region debug-point H1-wall-sound-vel
+    temp_diff = temperature - reference_temp
+    result = v0 + alpha * temp_diff
+    _dbg("H1", {"fn": "calculate_wall_sound_velocity", "material": material, "temperature": temperature, "reference_temp": reference_temp, "temp_diff": temp_diff, "alpha": alpha, "v0": v0, "raw_result": result})
+    #endregion
+
+    min_v_wall = v0 * 0.5
+    max_v_wall = v0 * 1.5
+    result = max(min_v_wall, min(result, max_v_wall))
+
+    #region debug-point H1-wall-sound-vel-clamped
+    _dbg("H2", {"fn": "calculate_wall_sound_velocity", "clamped_result": result, "min_allowed": min_v_wall, "max_allowed": max_v_wall, "was_clamped": result != (v0 + alpha * temp_diff)})
+    #endregion
+
+    return result
 
 
 def calculate_liquid_sound_velocity(
@@ -104,6 +129,9 @@ def calculate_liquid_sound_velocity(
     根据温度计算超声波在液化气体中的传播速度 (m/s)
 
     使用一阶线性近似: v(T) = v0 + α * (T - T_ref)
+
+    注意: 一阶线性近似仅在合理温度范围内有效, 超出范围会限制到物理合理值。
+          声速不能为负或接近零, 否则液位计算会出错。
     """
     if liquid_type not in LIQUID_GAS_PROPERTIES:
         liquid_type = "generic"
@@ -113,7 +141,22 @@ def calculate_liquid_sound_velocity(
     alpha = props["temp_coeff"]
     t_ref = props["reference_temp"]
 
-    return v0 + alpha * (temperature - t_ref)
+    #region debug-point H1-H2-liquid-sound-vel
+    temp_diff = temperature - t_ref
+    raw_result = v0 + alpha * temp_diff
+    _dbg("H1", {"fn": "calculate_liquid_sound_velocity", "liquid_type": liquid_type, "temperature": temperature, "reference_temp": t_ref, "temp_diff": temp_diff, "alpha": alpha, "v0": v0, "raw_result": raw_result})
+    _dbg("H2", {"fn": "calculate_liquid_sound_velocity", "v_liquid_raw": raw_result, "is_negative": raw_result < 0})
+    #endregion
+
+    min_v_liquid = max(100.0, v0 * 0.3)
+    max_v_liquid = v0 * 1.8
+    result = max(min_v_liquid, min(raw_result, max_v_liquid))
+
+    #region debug-point H2-liquid-sound-vel-clamped
+    _dbg("H2", {"fn": "calculate_liquid_sound_velocity", "v_liquid_clamped": result, "min_allowed": min_v_liquid, "max_allowed": max_v_liquid, "was_clamped": result != raw_result, "clamp_reason": "negative_or_too_low" if raw_result < min_v_liquid else "too_high" if raw_result > max_v_liquid else "none"})
+    #endregion
+
+    return result
 
 
 def calculate_liquid_level(
@@ -145,30 +188,78 @@ def calculate_liquid_level(
     返回:
         CalculationResult 包含计算过程和结果
     """
+    #region debug-point H5-total-height-validation
+    _dbg("H5", {"fn": "calculate_liquid_level", "total_height_input": total_height, "wall_thickness": wall_thickness, "echo_time_us": echo_time_us})
+    #endregion
+
+    if total_height <= 0:
+        _dbg("H5", {"fn": "calculate_liquid_level", "error": "total_height <= 0", "fallback": "return 0%"})
+        return CalculationResult(
+            wall_sound_velocity=0.0,
+            liquid_sound_velocity=0.0,
+            wall_travel_time=0.0,
+            liquid_travel_time=0.0,
+            liquid_level=0.0,
+            level_percentage=0.0,
+        )
+
     echo_time_s = echo_time_us * 1e-6
 
     v_wall = calculate_wall_sound_velocity(material, temperature)
 
     v_liquid = calculate_liquid_sound_velocity(temperature, liquid_type)
 
+    #region debug-point H2-v-liquid-guard
+    _dbg("H2", {"fn": "calculate_liquid_level", "v_liquid_before_guard": v_liquid, "v_wall": v_wall, "v_liquid_valid": v_liquid > 0})
+    if v_liquid <= 0:
+        _dbg("H2", {"fn": "calculate_liquid_level", "error": "v_liquid <= 0 after clamping", "fallback": "return 0%"})
+        return CalculationResult(
+            wall_sound_velocity=v_wall,
+            liquid_sound_velocity=v_liquid,
+            wall_travel_time=0.0,
+            liquid_travel_time=0.0,
+            liquid_level=0.0,
+            level_percentage=0.0,
+        )
+    #endregion
+
     t_wall = 2.0 * wall_thickness / v_wall
 
     t_liquid = echo_time_s - t_wall
+
+    #region debug-point H4-t-liquid
+    _dbg("H4", {"echo_time_us": echo_time_us, "echo_time_s": echo_time_s, "t_wall_s": t_wall, "t_wall_us": t_wall * 1e6, "t_liquid_s": t_liquid, "t_liquid_us": t_liquid * 1e6, "v_wall": v_wall, "v_liquid": v_liquid, "wall_thickness": wall_thickness, "is_t_liquid_neg": t_liquid <= 0})
+    #endregion
 
     if t_liquid <= 0:
         liquid_level = 0.0
     else:
         liquid_level = (t_liquid * v_liquid) / 2.0
 
-    liquid_level = float(np.clip(liquid_level, 0.0, total_height))
+    #region debug-point H2-H3-before-clip
+    _dbg("H2", {"t_liquid_pos": t_liquid > 0, "unclipped_level": liquid_level, "v_liquid_sign": "neg" if v_liquid < 0 else "pos", "level_sign": "neg" if liquid_level < 0 else "pos"})
+    _dbg("H5", {"total_height": total_height, "is_total_height_positive": total_height > 0})
+    #endregion
 
-    level_percentage = (liquid_level / total_height) * 100.0
+    liquid_level_clipped = max(0.0, min(liquid_level, total_height))
+
+    #region debug-point H3-after-clip
+    _dbg("H3", {"unclipped_level": liquid_level, "clipped_level": liquid_level_clipped, "clip_min": 0.0, "clip_max": total_height, "clip_worked": liquid_level_clipped == max(0.0, min(liquid_level, total_height)), "used_explicit_clip": True})
+    #endregion
+
+    level_percentage = (liquid_level_clipped / total_height) * 100.0
+
+    level_percentage = max(0.0, min(level_percentage, 100.0))
+
+    #region debug-point H5-percentage
+    _dbg("H5", {"liquid_level_clipped": liquid_level_clipped, "level_percentage": level_percentage, "percentage_sign": "neg" if level_percentage < 0 else "pos", "percentage_clamped": level_percentage > 100 or level_percentage < 0})
+    #endregion
 
     return CalculationResult(
         wall_sound_velocity=v_wall,
         liquid_sound_velocity=v_liquid,
         wall_travel_time=t_wall * 1e6,
         liquid_travel_time=t_liquid * 1e6 if t_liquid > 0 else 0.0,
-        liquid_level=liquid_level,
+        liquid_level=liquid_level_clipped,
         level_percentage=round(level_percentage, 2),
     )

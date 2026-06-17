@@ -84,6 +84,12 @@ def receive_sensor_data(
     if data.echo_time_us <= 0:
         raise HTTPException(status_code=400, detail="回波时间必须为正数")
 
+    if cylinder.wall_thickness <= 0 or cylinder.total_height <= 0 or cylinder.inner_diameter <= 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"钢瓶 {data.cylinder_code} 参数异常，请检查壁厚、总高度、内径是否均为正数"
+        )
+
     result = calculate_liquid_level(
         echo_time_us=data.echo_time_us,
         material=cylinder.material,
