@@ -59,6 +59,31 @@
             50% { opacity: 0.4; }
         }
 
+        @keyframes blink-red {
+            0%, 100% {
+                background: linear-gradient(90deg, #b71c1c, #f44336);
+                box-shadow: 0 0 8px rgba(244, 67, 54, 0.6);
+            }
+            50% {
+                background: linear-gradient(90deg, #d32f2f, #ff5252);
+                box-shadow: 0 0 20px rgba(244, 67, 54, 1), 0 0 40px rgba(244, 67, 54, 0.5);
+            }
+        }
+
+        @keyframes blink-text {
+            0%, 100% { color: #ff5252; text-shadow: 0 0 8px rgba(244, 67, 54, 0.4); }
+            50% { color: #ff8a80; text-shadow: 0 0 16px rgba(244, 67, 54, 0.8), 0 0 30px rgba(244, 67, 54, 0.4); }
+        }
+
+        @keyframes row-alert {
+            0%, 100% { background-color: rgba(244, 67, 54, 0.04); }
+            50% { background-color: rgba(244, 67, 54, 0.15); }
+        }
+
+        tbody tr.low-alert {
+            animation: row-alert 1.2s ease-in-out infinite;
+        }
+
         .container {
             max-width: 1100px;
             margin: 24px auto;
@@ -104,32 +129,53 @@
             font-weight: 700;
             font-size: 16px;
             font-variant-numeric: tabular-nums;
+            min-width: 62px;
+            display: inline-block;
         }
 
         .percentage.high { color: #4caf50; }
         .percentage.medium { color: #ff9800; }
-        .percentage.low { color: #f44336; }
+        .percentage.low {
+            animation: blink-text 1.2s ease-in-out infinite;
+        }
         .percentage.none { color: #5a6a7a; }
 
+        .level-cell {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            flex-wrap: wrap;
+        }
+
         .bar-container {
-            width: 120px;
-            height: 6px;
+            flex: 1;
+            min-width: 160px;
+            height: 12px;
             background: #1a2d3d;
-            border-radius: 3px;
+            border-radius: 6px;
             overflow: hidden;
-            margin-top: 4px;
+            border: 1px solid #2a3a4a;
         }
 
         .bar-fill {
             height: 100%;
-            border-radius: 3px;
-            transition: width 0.5s ease;
+            border-radius: 5px;
+            transition: width 0.5s ease, background 0.3s;
         }
 
-        .bar-fill.high { background: linear-gradient(90deg, #388e3c, #4caf50); }
-        .bar-fill.medium { background: linear-gradient(90deg, #f57c00, #ff9800); }
-        .bar-fill.low { background: linear-gradient(90deg, #d32f2f, #f44336); }
+        .bar-fill.high { background: linear-gradient(90deg, #2e7d32, #4caf50, #66bb6a); }
+        .bar-fill.medium { background: linear-gradient(90deg, #e65100, #ff9800, #ffb74d); }
+        .bar-fill.low {
+            animation: blink-red 1.2s ease-in-out infinite;
+        }
         .bar-fill.none { background: #3a4a5a; }
+
+        .warn-icon {
+            display: inline-block;
+            margin-left: 4px;
+            font-size: 14px;
+            animation: pulse 0.8s ease-in-out infinite;
+        }
 
         .no-data {
             color: #4a5a6a;
@@ -157,7 +203,9 @@
         @media (max-width: 768px) {
             .container { padding: 0 12px; }
             thead th, tbody td { padding: 10px 8px; font-size: 12px; }
-            .bar-container { width: 80px; }
+            .bar-container { min-width: 80px; height: 10px; }
+            .level-cell { gap: 8px; }
+            .percentage { font-size: 14px; min-width: 50px; }
         }
     </style>
 </head>
@@ -233,24 +281,35 @@
                 return;
             }
 
-            tbody.innerHTML = cylinders.map(c => {
+            const sorted = [...cylinders].sort((a, b) => {
+                const pa = a.last_percentage ?? Infinity;
+                const pb = b.last_percentage ?? Infinity;
+                return pa - pb;
+            });
+
+            tbody.innerHTML = sorted.map(c => {
                 const pct = c.last_percentage;
                 const cls = getLevelClass(pct);
+                const isLow = cls === 'low';
+                const rowCls = isLow ? 'low-alert' : '';
                 const pctDisplay = pct !== null && pct !== undefined ? pct.toFixed(1) + '%' : '-';
                 const tempDisplay = c.last_temperature !== null && c.last_temperature !== undefined
                     ? c.last_temperature.toFixed(1) : '-';
                 const timeDisplay = c.last_recorded_at ? formatTime(c.last_recorded_at) : '-';
+                const warnIcon = isLow ? '<span class="warn-icon" title="液位低于20%，请尽快更换！">⚠️</span>' : '';
 
                 return `
-                    <tr>
-                        <td style="font-weight:600; color:#8cb4d5;">${c.cylinder_code}</td>
+                    <tr class="${rowCls}">
+                        <td style="font-weight:600; color:#8cb4d5;">${c.cylinder_code}${warnIcon}</td>
                         <td>${c.material}</td>
                         <td>${(c.wall_thickness * 1000).toFixed(1)}</td>
                         <td>${c.total_height.toFixed(2)}</td>
                         <td>
-                            <span class="percentage ${cls}">${pctDisplay}</span>
-                            <div class="bar-container">
-                                <div class="bar-fill ${cls}" style="width: ${pct !== null && pct !== undefined ? Math.min(pct, 100) : 0}%"></div>
+                            <div class="level-cell">
+                                <span class="percentage ${cls}">${pctDisplay}</span>
+                                <div class="bar-container">
+                                    <div class="bar-fill ${cls}" style="width: ${pct !== null && pct !== undefined ? Math.min(pct, 100) : 0}%"></div>
+                                </div>
                             </div>
                         </td>
                         <td>${tempDisplay}</td>
